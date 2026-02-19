@@ -24,14 +24,14 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --bg:        #faf8f4;
-  --sand:      #e0d6c0;
-  --fog:       #b4aba0;
-  --fog2:      #8a8078;
-  --text:      #3d2b1a;
-  --text2:     #7a5c3a;
-  --panel:     rgba(250,248,244,0.96);
-  --shadow:    rgba(40,25,8,0.22);
+  /* UI always renders over a dark canvas background */
+  --sand:      #2c2010;
+  --fog:       #7a7068;
+  --fog2:      #9a8d80;
+  --text:      #f2e8d8;
+  --text2:     #c8a87a;
+  --panel:     rgba(14,8,4,0.92);
+  --shadow:    rgba(0,0,0,0.6);
   --safe-top:  env(safe-area-inset-top,  0px);
   --safe-bot:  env(safe-area-inset-bottom, 0px);
   --safe-left: env(safe-area-inset-left,  0px);
@@ -40,23 +40,12 @@
   --c0: 210,168,92;  --c1: 180,120,60;
   --c2: 140,90,40;   --c3: 100,60,20;  --c4: 80,48,15;
 }
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg:    #12090200;
-    --sand:  #2c2010;
-    --fog:   #5e5650;
-    --fog2:  #8a7d70;
-    --text:  #f2e8d8;
-    --text2: #c8a87a;
-    --panel: rgba(16,10,4,0.95);
-    --shadow:rgba(0,0,0,0.6);
-  }
-}
 
 html, body {
   height:100%; width:100%;
   overflow:hidden;
-  background:#12090200;
+  /* Always dark — canvas paints on top */
+  background:#0b0604;
   font-family:'Lora',Georgia,serif;
   color:var(--text);
   -webkit-font-smoothing:antialiased;
@@ -69,32 +58,12 @@ body::after {
   pointer-events:none; z-index:999;
 }
 
-/* ══ GRADIENT CANVAS ══════════════════════════════════════════
-   5 soft blobs, blurred heavily → aurora / lava-lamp effect   */
-#gradCanvas {
-  position:fixed; inset:0; overflow:hidden;
-  filter:blur(55px) saturate(1.6);
+/* ══ GRADIENT CANVAS — real 2D canvas, always animating ══════ */
+#vizCanvas {
+  position:fixed; inset:0;
+  width:100%; height:100%;
   z-index:0;
-  opacity:0.55;
-  transition:opacity 1s ease;
-}
-@media (prefers-color-scheme:dark) { #gradCanvas { opacity:0.7; } }
-#gradCanvas.dim { opacity:0.28; }
-@media (prefers-color-scheme:dark) { #gradCanvas.dim { opacity:0.45; } }
-
-.blob {
-  position:absolute;
-  border-radius:50%;
-  will-change:transform;
-}
-
-/* Dark base layer so colours show on white bg too */
-#screenBase {
-  position:fixed; inset:0; z-index:0;
-  background:linear-gradient(160deg,#0e0806 0%,#1a1008 100%);
-}
-@media (prefers-color-scheme:light) {
-  #screenBase { background:linear-gradient(160deg,#f5f0e8 0%,#ede5d0 100%); }
+  will-change:contents;
 }
 
 /* ══ SCREENS ══════════════════════════════════════════════════ */
@@ -163,7 +132,7 @@ body::after {
     width:34%; display:flex; flex-direction:column;
     align-items:center; justify-content:center;
     padding:12px 16px; gap:11px; flex-shrink:0;
-    border-right:1px solid rgba(255,255,255,0.08);
+    border-right:1px solid rgba(255,255,255,0.07);
   }
   .ls-album-art {
     width:min(148px,26vw); height:min(148px,26vw);
@@ -562,15 +531,8 @@ input[type=range].vol-slider::-webkit-slider-thumb {
 </head>
 <body>
 
-<!-- ══ GRADIENT VISUALIZER ════════════════════════════════════ -->
-<div id="screenBase"></div>
-<div id="gradCanvas">
-  <div class="blob" id="b0"></div>
-  <div class="blob" id="b1"></div>
-  <div class="blob" id="b2"></div>
-  <div class="blob" id="b3"></div>
-  <div class="blob" id="b4"></div>
-</div>
+<!-- ══ GRADIENT VISUALIZER (canvas 2D) ═══════════════════════ -->
+<canvas id="vizCanvas"></canvas>
 
 <!-- ══ LOGIN ══════════════════════════════════════════════════ -->
 <div id="loginScreen" class="screen">
@@ -772,50 +734,80 @@ let karaokeOn=false;
 let palette=[[210,168,92],[160,110,55],[120,80,35],[80,50,20],[60,35,10]];
 
 // ══════════════════════════════════════════════════════════════
-//  GRADIENT BLOB VISUALIZER
+//  CANVAS GRADIENT VISUALIZER
+//  5 blobs drawn as radial gradients with 'screen' blending.
+//  Each blob drifts on independent sine/cosine paths.
+//  playEnergy (0-1) scales the movement amplitude so the
+//  gradient visibly sways more when music is playing.
 // ══════════════════════════════════════════════════════════════
-// Each blob has a position, size, and sinusoidal motion params
+const vizCanvas = document.getElementById('vizCanvas');
+const vCtx = vizCanvas.getContext('2d');
+
+function resizeVizCanvas(){
+  vizCanvas.width  = window.innerWidth;
+  vizCanvas.height = window.innerHeight;
+}
+resizeVizCanvas();
+window.addEventListener('resize', resizeVizCanvas);
+// Also re-size on orientation change (iOS fires resize, but belt-and-suspenders)
+window.addEventListener('orientationchange', ()=>{ setTimeout(resizeVizCanvas, 100); });
+
 const blobDefs = [
-  { wPct:90,hPct:70, baseX:50,baseY:10,  ampX:18,ampY:14, freqX:0.00023,freqY:0.00031, phaseX:0,    phaseY:1.2  },
-  { wPct:75,hPct:80, baseX:15,baseY:55,  ampX:16,ampY:18, freqX:0.00019,freqY:0.00027, phaseX:2.1,  phaseY:0.4  },
-  { wPct:80,hPct:65, baseX:85,baseY:70,  ampX:14,ampY:16, freqX:0.00031,freqY:0.00021, phaseX:4.2,  phaseY:3.0  },
-  { wPct:65,hPct:75, baseX:50,baseY:90,  ampX:20,ampY:12, freqX:0.00017,freqY:0.00035, phaseX:1.5,  phaseY:2.4  },
-  { wPct:60,hPct:60, baseX:80,baseY:20,  ampX:15,ampY:20, freqX:0.00029,freqY:0.00019, phaseX:3.3,  phaseY:1.8  },
+  // baseX/Y as fraction of W/H, ampX/Y as fraction, freqX/Y cycles/ms, phase radians, radius factor
+  { bx:0.50, by:0.05, ax:0.20, ay:0.18, fx:0.00023, fy:0.00031, px:0.0,  py:1.2,  r:0.90, pi:0 },
+  { bx:0.05, by:0.55, ax:0.18, ay:0.22, fx:0.00017, fy:0.00025, px:2.1,  py:0.4,  r:0.80, pi:1 },
+  { bx:0.90, by:0.72, ax:0.16, ay:0.20, fx:0.00031, fy:0.00019, px:4.2,  py:3.0,  r:0.75, pi:2 },
+  { bx:0.45, by:1.00, ax:0.22, ay:0.14, fx:0.00015, fy:0.00037, px:1.5,  py:2.4,  r:0.85, pi:3 },
+  { bx:0.82, by:0.18, ax:0.17, ay:0.24, fx:0.00028, fy:0.00016, px:3.3,  py:1.8,  r:0.70, pi:4 },
 ];
 
-let vizRunning=false;
-let playEnergy=0; // 0–1, ramps up when playing, down when paused
+let vizRunning = false;
+let playEnergy = 0; // ramps 0↔1 based on isPlaying
+
+function drawVizFrame(t){
+  if(!vizRunning) return;
+
+  const W = vizCanvas.width, H = vizCanvas.height;
+  const maxR = Math.max(W, H);
+
+  // Ramp energy smoothly
+  const target = isPlaying ? 1 : 0.15;
+  playEnergy += (target - playEnergy) * 0.025;
+
+  // Dark base — always drawn first
+  vCtx.globalCompositeOperation = 'source-over';
+  vCtx.fillStyle = '#0b0604';
+  vCtx.fillRect(0, 0, W, H);
+
+  // Draw each blob
+  blobDefs.forEach(b => {
+    const [r, g, bv] = palette[b.pi];
+    const cx = b.bx*W + Math.sin(t*b.fx + b.px) * b.ax * playEnergy * W;
+    const cy = b.by*H + Math.cos(t*b.fy + b.py) * b.ay * playEnergy * H;
+    const radius = maxR * b.r;
+
+    const grad = vCtx.createRadialGradient(cx, cy, 0, cx, cy, radius);
+    const alpha = 0.45 + playEnergy * 0.35;
+    grad.addColorStop(0,   `rgba(${r},${g},${bv},${alpha})`);
+    grad.addColorStop(0.4, `rgba(${r},${g},${bv},${alpha * 0.4})`);
+    grad.addColorStop(1,   `rgba(${r},${g},${bv},0)`);
+
+    // 'screen' blend: colours add like coloured light → beautiful aurora mix
+    vCtx.globalCompositeOperation = 'screen';
+    vCtx.fillStyle = grad;
+    vCtx.fillRect(0, 0, W, H);
+  });
+
+  vCtx.globalCompositeOperation = 'source-over';
+  requestAnimationFrame(drawVizFrame);
+}
 
 function startViz(){
   if(vizRunning) return;
-  vizRunning=true;
-  function frame(t){
-    if(!vizRunning) return;
-
-    // Ramp energy
-    const targetEnergy = isPlaying ? 1 : 0.2;
-    playEnergy += (targetEnergy - playEnergy) * 0.02;
-
-    const W=window.innerWidth, H=window.innerHeight;
-    blobDefs.forEach((b,i)=>{
-      const blob=document.getElementById('b'+i);
-      const bw=W*b.wPct/100, bh=H*b.hPct/100;
-      // sinusoidal position with energy scaling
-      const amp=playEnergy;
-      const cx=(b.baseX/100)*W + Math.sin(t*b.freqX+b.phaseX)*b.ampX*amp*(W/100);
-      const cy=(b.baseY/100)*H + Math.cos(t*b.freqY+b.phaseY)*b.ampY*amp*(H/100);
-      const [r,g,bb]=palette[i];
-      blob.style.cssText=`
-        width:${bw}px; height:${bh}px;
-        left:${cx-bw/2}px; top:${cy-bh/2}px;
-        background:rgb(${r},${g},${bb});
-        opacity:${0.55+playEnergy*0.25};
-      `;
-    });
-    requestAnimationFrame(frame);
-  }
-  requestAnimationFrame(frame);
+  vizRunning = true;
+  requestAnimationFrame(drawVizFrame);
 }
+function stopViz(){ vizRunning = false; }
 
 function extractPalette(img){
   try{
@@ -1197,14 +1189,14 @@ const escHtml=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>
 //  NAVIGATION
 // ══════════════════════════════════════════════════════════════
 function showLogin(){
-  clearInterval(pollInt);clearInterval(progInt);vizRunning=false;
+  clearInterval(pollInt);clearInterval(progInt);
+  // Keep viz running on login screen for atmosphere — just don't stop it
   document.getElementById('loginScreen').classList.remove('hidden');
   document.getElementById('playerScreen').classList.add('hidden');
 }
 function showPlayer(){
   document.getElementById('loginScreen').classList.add('hidden');
   document.getElementById('playerScreen').classList.remove('hidden');
-  startViz();
   poll();
   pollInt=setInterval(poll,3000);
   startTick();
